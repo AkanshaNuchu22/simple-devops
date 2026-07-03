@@ -1,19 +1,331 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
+DDME build pipeline CM
+ 
+# ASP.NET Core (.NET Framework)
 
+# Build and test ASP.NET Core projects targeting the full .NET Framework.
+
+# Add steps that publish symbols, save build artifacts, and more:
+
+# https://docs.microsoft.com/azure/devops/pipelines/languages/dotnet-core
+ 
 trigger:
-- master
+
+  batch: true
+
+  branches:
+
+    include:
+
+    - develop
+
+    - uat
+
+    - release/*
+
+  paths:
+
+    exclude:
+
+    - Pipeline
+
+pr: none
 
 pool:
-  vmImage: ubuntu-latest
 
+  name:  'Sitecore Consolidation-DEV'
+ 
+name: $(Site_name)-$(Date:yyyyMMdd)-$(Rev:r)
+ 
+variables:
+
+  solution: '**/*.sln'
+
+  buildPlatform: 'Any CPU'
+
+  buildConfiguration: 'Release'
+
+  criticalfiles: 'web.config,App_Config/ConnectionStrings.config'
+ 
 steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+- task: NuGetToolInstaller@1
+
+  inputs:
+
+    versionSpec: '4.x'
+
+  displayName: 'Install Tool Nuget'
+ 
+- task: NuGetCommand@2
+
+  displayName: 'Install nuget dependencies'
+
+  inputs:
+
+    command: 'restore'
+
+    restoreSolution: '$(solution)'
+
+    feedsToUse: 'config'
+
+    nugetConfigPath: 'NuGet.Config'
+ 
+- task: NodeTool@0
+
+  displayName: 'Install Node tool'
+
+  inputs:
+
+    versionSpec: 10.x
+ 
+- task: Npm@1
+
+  displayName: 'Npm Install dependencies'
+
+  inputs:
+
+    command: 'install'
+
+    verbose: true
+ 
+- task: Npm@1
+
+  displayName: 'npm install msbuild'
+
+  inputs:
+
+    command: 'custom'
+
+    customCommand: 'install msbuild --save-dev'
+ 
+- task: VSBuild@1
+
+  displayName: 'Build Solution'
+
+  inputs:
+
+    solution: '$(solution)'
+
+    vsVersion: '16.0'
+
+   # msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:PrecompileBeforePublish=true'
+
+    msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true'
+
+    platform: '$(buildPlatform)'
+
+    configuration: '$(buildConfiguration)'
+ 
+- task: DeleteFiles@1
+
+  inputs:
+
+    SourceFolder: 'C:\Projects\Gilead\Build\DDME'
+
+    Contents: '**/*'
+ 
+- task: gulp@0
+
+  displayName: 'gulp deploy-Azure'
+
+  inputs:
+
+    gulpFile: 'gulpfile.js'
+
+    targets: 'deploy-Azure'
+
+    gulpjs: 'node_modules/gulp/bin/gulp.js'
+
+    enableCodeCoverage: false
+ 
+- task: CopyFiles@2
+
+  displayName: 'Copy Nuget Files'
+
+  inputs:
+
+    SourceFolder: 'nuget/scaffold/Corp-CM/1.0'
+
+    Contents: '**'
+
+    TargetFolder: '$(Build.ArtifactStagingDirectory)\DDME\Deployment'
+ 
+- task: CopyFiles@2
+
+  displayName: 'Copy All artifacts'
+
+  inputs:
+
+    SourceFolder: 'C:\Projects\Gilead\Build\DDME'
+
+    Contents: |
+
+      **/*
+
+      !web.config
+
+    TargetFolder: '$(Build.ArtifactStagingDirectory)\DDME\Deployment\Website'
+ 
+- task: CmdLine@2
+
+  displayName: 'Remove readme.txt'
+
+  inputs:
+
+    script: |
+
+      echo "Remove Readme file"
+
+      del /f  $(Build.ArtifactStagingDirectory)\DDME\Deployment\Website\Views\readme.txt
+
+      del /f  $(Build.ArtifactStagingDirectory)\DDME\Deployment\Website\App_Config\readme.txt
+ 
+- task: PowerShell@2
+
+  displayName: 'Critical files check'
+
+  inputs:
+
+    targetType: 'inline'
+
+    script: |
+
+      $files ="$(criticalfiles)"
+
+      $split = $files.Split(',')
+
+      Write-Host "$split"
+
+      Write-Host "Checking for following files"
+
+      Write-Host "----------------------------"
+
+      $split
+
+      Write-Host "----------------------------"
+
+      $filelist = Get-ChildItem $(Build.ArtifactStagingDirectory)\DDME\Deployment\Website -Recurse -Name | Where-Object {
+
+       $split -contains $_ 
+
+       }
+
+       if($filelist)
+
+       {
+
+       throw 'Critical files found.'
+
+       }
+
+       else
+
+       {
+
+       Write-Host 'No critical files found.'
+
+       }
+ 
+- task: CmdLine@2
+
+  displayName: 'Create nupkg file'
+
+  inputs:
+
+    script: |
+
+      echo "Create deployment package"
+
+      cd $(Build.ArtifactStagingDirectory)\DDME\Deployment
+
+      nuget pack MakePackage.nuspec
+ 
+- task: PowerShell@2
+
+  displayName: 'Check if the package is SCOnly or FullDeployment'
+
+  inputs:
+
+    filePath: '$(Build.SourcesDirectory)\Pipeline\sc_only_check_cm.ps1'
+
+    arguments: '-folder $(Build.ArtifactStagingDirectory)\DDME\Deployment'
+ 
+- task: CopyFiles@2
+
+  displayName: 'Copy Files if SC only package'
+
+  inputs:
+
+    SourceFolder: '$(Build.ArtifactStagingDirectory)\DDME\Deployment'
+
+    Contents: |
+
+      Website\PostDeploymentActions\**
+
+      Website\App_Data\packages\**
+
+      $(Build.ArtifactStagingDirectory)\DDME\Deployment\*.nupkg
+
+    TargetFolder: '$(Build.ArtifactStagingDirectory)\DDME\FinalArtifact'
+
+  condition: and(succeeded(), eq(variables['packageDeployment'], 'sconly'))
+ 
+- task: CopyFiles@2
+
+  displayName: 'Copy Files if Full Deployment package'
+
+  inputs:
+
+    SourceFolder: '$(Build.ArtifactStagingDirectory)\DDME\Deployment'
+
+    Contents: '**'
+
+    TargetFolder: '$(Build.ArtifactStagingDirectory)\DDME\FinalArtifact'
+
+  condition: and(succeeded(), ne(variables['packageDeployment'], 'sconly'))
+ 
+- task: PublishBuildArtifacts@1
+
+  displayName: 'Publish Artifact to drop'
+
+  inputs:
+
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)\DDME\FinalArtifact'
+
+    ArtifactName: 'drop'
+
+    publishLocation: 'Container'
+
+  enabled: true
+ 
+#- ${{ if eq(variables['Build.SourceBranchName'], 'release/*') }}:
+
+#  - script: |
+
+#      nuget sources add -Name Hcp-CM -Source https://pkgs.dev.azure.com/Gilead-IT-CorporateWebsites/cc0356e7-c98a-4532-bf2d-87b4c0554ac8/_packaging/Hcp-CM/nuget/v3/index.json -Username rlogalingam -Password $(pat)
+
+#      
+
+#      nuget push -Source Hcp-CM -ApiKey az $(Build.ArtifactStagingDirectory)\DDME\Deployment\*.nupkg
+ 
+ 
+####-- Nuget Check Tasks Start ---####
+
+#- task: UniversalPackages@0
+
+#  inputs:
+
+#    command: 'publish'
+
+#   publishDirectory: '$(Build.ArtifactStagingDirectory)'
+
+#   feedsToUsePublish: 'internal'
+
+#   vstsFeedPublish: '1d075710-73a2-43f2-8112-cc8c646543e7/fdfffdef-0aad-48bc-92c6-569a8b564e74'
+
+#   vstsFeedPackagePublish: 'ddme'
+
+#   versionOption: 'custom'
+
+#   versionPublish: '1.0.0-$(Build.BuildNumber)'
+ 
